@@ -1,0 +1,47 @@
+{
+  "target_server": {
+    "ip": "51.77.68.91",
+    "port": 29000,
+    "name": "FW-Rebirth Game Server"
+  },
+  "monitoring": {
+    "ping_interval_ms": 500,
+    "mtr_interval_s": 3,
+    "max_hops": 20,
+    "freeze_threshold_ms": 120,
+    "packet_loss_window_seconds": 60,
+    "auto_detect_game_process": true,
+    "game_process_names": [
+      "pem.exe",
+      "pemv.exe",
+      "elementclient.exe",
+      "patcher.exe"
+    ]
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8899,
+    "auto_open_browser": true
+  },
+  "alerts": {
+    "sound_on_freeze": true,
+    "sound_volume": 0.5
+  },
+  "hud": {
+    "x": 14,
+    "y": 208,
+    "opacity": 0.95,
+    "compact": false
+  },
+  "optimizer": {
+    "enabled": true,
+    "zapret_path": "",
+    "wireguard_path": "",
+    "game_ports": [
+      29000,
+      29001,
+      29002
+    ],
+    "relays": []
+  }
+}

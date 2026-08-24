@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FW-NetPulse Pro | Сетевой монитор и диагностика лагов</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/chart.umd.js"></script>
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    <!-- TOP HEADER -->
+    <header class="top-header">
+      <div class="brand-section">
+        <div class="pulse-indicator" id="globalStatusDot"></div>
+        <div class="brand-title">
+          <h1>FW-NetPulse <span class="badge-version" id="appVersion">v1.0.0.0</span></h1>
+          <span class="brand-subtitle">Мониторинг задержек, TCP сокетов и диагностика лагов Forsaken World</span>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <button class="btn-hud" id="btnLaunchHud" title="Открыть компактный плавающий оверлей поверх игры">
+          🎮 Плавающий HUD
+        </button>
+
+        <button class="btn-action" id="btnOpenSettings" title="Центр управления функциями и TCP оптимизацией">
+          ⚙️ Управление фишками
+        </button>
+
+        <div class="server-badge" id="targetServerBadge">
+          <span class="label">Сервер:</span>
+          <span class="val" id="targetIpDisplay">51.77.68.91:29000</span>
+          <button class="btn-icon" id="btnChangeTarget" title="Сменить целевой IP">✏️</button>
+        </div>
+
+        <div class="audio-toggle" id="audioToggleBtn" title="Звуковое оповещение при микрофризах">
+          <span class="icon">🔔</span>
+          <span class="label">Звук: <b>ВКЛ</b></span>
+        </div>
+
+        <div class="export-group">
+          <button class="btn-action" id="btnExportCsv" title="Экспорт истории в CSV">📥 CSV</button>
+          <button class="btn-action" id="btnExportJson" title="Экспорт истории в JSON">📥 JSON</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- DIAGNOSTICS BANNER -->
+    <section class="diag-banner" id="diagBanner">
+      <div class="diag-icon" id="diagIcon">⚡</div>
+      <div class="diag-content">
+        <div class="diag-title" id="diagTitle">Анализ качества связи...</div>
+        <div class="diag-message" id="diagMessage">Выполняется сбор телеметрии маршрута к игровому серверу.</div>
+        <div class="diag-rec" id="diagRec">Рекомендация: подождите несколько секунд...</div>
+      </div>
+      <div class="diag-badge" id="diagBadge">Проверка</div>
+    </section>
+
+    <!-- METRICS CARDS (5 HERO CARDS) -->
+    <section class="metrics-grid">
+      <!-- Card 1: Ping ICMP -->
+      <div class="metric-card ping-card" id="pingCard">
+        <div class="metric-header">
+          <span class="metric-title">СЕТЕВОЙ ПИНГ (ICMP RTT)</span>
+          <span class="metric-badge" id="pingQualityBadge">ОТЛИЧНО</span>
+        </div>
+        <div class="metric-main">
+          <span class="metric-value" id="currentPing">--</span>
+          <span class="metric-unit">мс</span>
+        </div>
+        <div class="metric-footer">
+          <div class="sub-stat">Мин: <b id="minPing">--</b> мс</div>
+          <div class="sub-stat">Сред: <b id="avgPing">--</b> мс</div>
+          <div class="sub-stat">Макс: <b id="maxPing">--</b> мс</div>
+        </div>
+      </div>
+
+      <!-- Card 2: TCP Game Port Ping -->
+      <div class="metric-card tcp-card">
+        <div class="metric-header">
+          <span class="metric-title">ИГРОВОЙ СОКЕТ (TCP :29000)</span>
+          <span class="metric-badge good" id="tcpQualityBadge">GLINKD</span>
+        </div>
+        <div class="metric-main">
+          <span class="metric-value" id="tcpPingVal" style="color: var(--accent-purple);">--</span>
+          <span class="metric-unit">мс</span>
+        </div>
+        <div class="metric-footer">
+          <div class="sub-stat">Сред: <b id="tcpAvgVal">--</b> мс</div>
+          <div class="sub-stat">Потери сокета: <b id="tcpLossVal">0.0%</b></div>
+        </div>
+      </div>
+
+      <!-- Card 3: Jitter -->
+      <div class="metric-card jitter-card">
+        <div class="metric-header">
+          <span class="metric-title">ДЖИТТЕР (RFC 3550)</span>
+          <span class="metric-badge" id="jitterQualityBadge">СТАБИЛЬНО</span>
+        </div>
+        <div class="metric-main">
+          <span class="metric-value" id="currentJitter">--</span>
+          <span class="metric-unit">мс</span>
+        </div>
+        <div class="metric-footer">
+          <div class="sub-stat">Колебание пинга между пакетами</div>
+        </div>
+      </div>
+
+      <!-- Card 4: Packet Loss -->
+      <div class="metric-card loss-card" id="lossCard">
+        <div class="metric-header">
+          <span class="metric-title">ПОТЕРЯ ПАКЕТОВ</span>
+          <span class="metric-badge" id="lossBadge">0.0%</span>
+        </div>
+        <div class="metric-main">
+          <span class="metric-value" id="rollingLoss">0.0</span>
+          <span class="metric-unit">%</span>
+        </div>
+        <div class="metric-footer">
+          <div class="sub-stat">За 60 сек: <b id="rollingLossSub">0.0%</b></div>
+          <div class="sub-stat">Потеряно: <b id="lostCount">0</b> из <b id="sentCount">0</b></div>
+        </div>
+      </div>
+
+      <!-- Card 5: Dynamic Multi-Client Info -->
+      <div class="metric-card connection-card">
+        <div class="metric-header">
+          <span class="metric-title">ОКНА ИГРЫ (PEM.EXE)</span>
+          <span class="metric-badge" id="socketBadge">ОКОН: 0</span>
+        </div>
+        <div class="metric-main-small">
+          <div class="info-row"><span class="k">Обнаружено:</span> <b class="v" id="procCountDisplay">0 окон</b></div>
+          <div class="info-row"><span class="k">Выбрано:</span> <b class="v" id="procNameDisplay">Все окна</b></div>
+          <div class="info-row"><span class="k">Сокет:</span> <b class="v" id="procSocketDisplay">51.77.68.91:29000</b></div>
+        </div>
+        <div class="metric-footer">
+          <div class="sub-stat" id="procStatusText">Ожидание запуска клиента</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MULTI-CLIENT LIVE WINDOWS DRAWER (IF MULTIPLE INSTANCES RUNNING) -->
+    <section class="multi-clients-section" id="multiClientSection" style="display: none;">
+      <div class="section-header">
+        <div class="header-left">
+          <h2>👥 Активные окна игры (Мульти-клиент монитор)</h2>
+          <span class="chart-sub">Автоматическое определение всех запущенных процессов pem.exe</span>
+        </div>
+      </div>
+      <div class="clients-grid" id="clientsGrid">
+        <!-- Dynamic window cards populated via JS -->
+      </div>
+    </section>
+
+    <!-- GAME ROUTE OPTIMIZER -->
+    <section class="optimizer-section" id="optimizerSection">
+      <div class="section-header">
+        <div class="header-left">
+          <h2>🛡️ Обход ограничений и оптимизация игрового маршрута</h2>
+          <span class="chart-sub">Точечная обработка только IP и портов найденной игры с безопасным откатом</span>
+        </div>
+        <div class="header-right">
+          <span class="optimizer-badge info" id="optimizerMainBadge">АНАЛИЗ</span>
+        </div>
+      </div>
+
+      <div class="optimizer-grid">
+        <div class="optimizer-card route-card">
+          <div class="optimizer-card-head">
+            <span class="optimizer-icon" id="optimizerRouteIcon">🔎</span>
+            <div>
+              <h3 id="optimizerRouteTitle">Собираем маршрут</h3>
+              <span class="optimizer-kicker">Автоматический анализ пути доставки</span>
+            </div>
+          </div>
+          <p class="optimizer-message" id="optimizerRouteMessage">Подождите несколько циклов Smart MTR.</p>
+          <div class="optimizer-targets">
+            <span>Цель:</span>
+            <b id="optimizerTargets">определяется…</b>
+          </div>
+          <div class="optimizer-metrics">
+            <div><span>Медиана</span><b id="optimizerMedian">--</b></div>
+            <div><span>P95</span><b id="optimizerP95">--</b></div>
+            <div><span>Потери</span><b id="optimizerLoss">--</b></div>
+            <div><span>Оценка</span><b id="optimizerScore">--</b></div>
+          </div>
+        </div>
+
+        <div class="optimizer-card">
+          <div class="optimizer-card-head compact">
+            <span class="optimizer-icon">🧩</span>
+            <div>
+              <h3>Точечный DPI-обход</h3>
+              <span class="optimizer-kicker" id="dpiAvailability">Проверяем winws…</span>
+            </div>
+          </div>
+          <select class="optimizer-select" id="dpiProfileSelect" aria-label="Профиль игрового обхода">
+            <option value="multisplit">Аккуратное разделение TCP</option>
+          </select>
+          <div class="optimizer-state-line">
+            <span class="state-dot" id="dpiStateDot"></span>
+            <span id="dpiStateText">Обход выключен</span>
+          </div>
+          <div class="optimizer-actions">
+            <button class="btn-primary" id="btnStartDpi">Включить профиль</button>
+            <button class="btn-secondary" id="btnStopDpi" disabled>Отключить</button>
+          </div>
+          <p class="optimizer-warning">После смены профиля переподключитесь к серверу игры. Уже открытое TCP-соединение не изменится.</p>
+        </div>
+
+        <div class="optimizer-card">
+          <div class="optimizer-card-head compact">
+            <span class="optimizer-icon">🌍</span>
+            <div>
+              <h3>Игровой релей WireGuard</h3>
+              <span class="optimizer-kicker" id="relayAvailability">Релеи не настроены</span>
+            </div>
+          </div>
+          <select class="optimizer-select" id="relaySelect" aria-label="Игровой релей" disabled>
+            <option value="">Нет доступных релеев</option>
+          </select>
+          <div class="optimizer-state-line">
+            <span class="state-dot" id="relayStateDot"></span>
+            <span id="relayStateText">Прямой маршрут</span>
+          </div>
+          <div class="optimizer-actions">
+            <button class="btn-primary" id="btnStartRelay" disabled>Включить релей</button>
+            <button class="btn-secondary" id="btnStopRelay" disabled>Отключить</button>
+          </div>
+          <p class="optimizer-warning">Принимаются только конфигурации с AllowedIPs игрового сервера `/32`. Весь остальной интернет остаётся прямым.</p>
+        </div>
+      </div>
+
+      <div class="calibration-panel">
+        <div class="calibration-copy">
+          <h3>🎯 Калибровка качества</h3>
+          <p id="calibrationInstruction">Поиграйте не менее минуты на текущем режиме и сохраните замер. Программа сравнит варианты автоматически.</p>
+        </div>
+        <div class="calibration-best" id="calibrationBest">Лучший режим пока не определён</div>
+        <button class="btn-primary" id="btnCaptureCalibration">Сохранить замер 60 секунд</button>
+      </div>
+      <div class="calibration-records" id="calibrationRecords"></div>
+    </section>
+
+    <!-- LIVE REAL-TIME GRAPH WITH TIMEFRAME SWITCHER -->
+    <section class="chart-section">
+      <div class="section-header">
+        <div class="header-left">
+          <h2>📊 График сетевой задержки</h2>
+          <span class="chart-sub" id="chartTimeframeLabel">Отображение за последние 60 секунд</span>
+        </div>
+        <div class="header-right" style="flex-wrap:wrap; min-width:0;">
+          <!-- TIMEFRAME BUTTONS -->
+          <div class="timeframe-group">
+            <button class="btn-timeframe active" data-timeframe="60">1 мин</button>
+            <button class="btn-timeframe" data-timeframe="300">5 мин</button>
+            <button class="btn-timeframe" data-timeframe="600">10 мин</button>
+            <button class="btn-timeframe" data-timeframe="900">15 мин</button>
+          </div>
+
+          <div class="legend-group" style="flex-wrap:wrap; row-gap:6px;">
+            <span class="legend-item"><span class="color-dot ping-dot"></span> ICMP</span>
+            <span class="legend-item"><span class="color-dot tcp-dot"></span> TCP порт</span>
+            <span class="legend-item"><span class="color-dot" style="background:rgba(255,255,255,0.45)"></span> Средний</span>
+            <span class="legend-item"><span class="color-dot" style="background:#f59e0b"></span> Скачок</span>
+            <span class="legend-item"><span class="color-dot" style="background:#ef4444"></span> Потеря</span>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="pingChart"></canvas>
+      </div>
+    </section>
+
+    <!-- VISUAL SMART MTR ROUTE TABLE WITH GEOIP & FLAGS -->
+    <section class="mtr-section">
+      <div class="section-header">
+        <div class="header-left">
+          <h2>🛣️ Визуальный Smart MTR-маршрут (с локацией и флагами)</h2>
+          <span class="chart-sub">Интеллектуальная фильтрация ICMP Rate-Limit и геолокация узлов</span>
+        </div>
+        <div class="header-right">
+          <span class="mtr-indicator" id="mtrPulse">● Smart MTR Активен</span>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="mtr-table">
+          <thead>
+            <tr>
+              <th style="width: 50px;">Хоп</th>
+              <th>Локация</th>
+              <th>Узел / Оборудование</th>
+              <th>IP-Адрес</th>
+              <th>Категория</th>
+              <th style="text-align: center;">Потери (%)</th>
+              <th style="text-align: right;">Посл. (мс)</th>
+              <th style="text-align: right;">Мин (мс)</th>
+              <th style="text-align: right;">Сред. (мс)</th>
+              <th style="text-align: right;">Макс (мс)</th>
+            </tr>
+          </thead>
+          <tbody id="mtrTableBody">
+            <tr>
+              <td colspan="10" class="table-loading">Идет первичное построение цепочки узлов...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- FREEZE & INCIDENT HISTORY -->
+    <section class="history-section">
+      <div class="section-header">
+        <div class="header-left">
+          <h2>⚠️ Журнал микрофризов и сетевых аномалий</h2>
+          <span class="chart-sub">Автоматическая фиксация скачков пинга и потерь пакетов в SQLite</span>
+        </div>
+        <div class="header-right">
+          <span class="badge-count" id="freezeCountBadge">Всего событий: 0</span>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th style="width: 90px;">Время</th>
+              <th>Причина инцидента</th>
+              <th style="text-align: right;">Пиковый RTT</th>
+              <th>Виновный узел / Причина</th>
+              <th>Цель</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr>
+              <td colspan="5" class="table-empty">Сетевых фризов не зафиксировано. Связь стабильна!</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="app-footer">
+      <div>FW-NetPulse Ultimate Engine • Target: <span id="footerTarget">51.77.68.91</span></div>
+      <div>High-Precision Windows API • 0% CPU Overhead</div>
+    </footer>
+  </div>
+
+  <!-- CONTROL & SETTINGS MODAL -->
+  <div class="modal-overlay" id="settingsModal">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <h3>⚙️ Центр управления функциями и оптимизацией</h3>
+        <button class="btn-close" id="btnCloseSettings">✕</button>
+      </div>
+
+      <div class="settings-grid">
+        <!-- Section 1: Feature Toggles -->
+        <div class="settings-box">
+          <h4>Управление модулями программы</h4>
+          <div class="toggle-list">
+            <label class="toggle-row">
+              <span>TCP Game Ping (порт 29000)</span>
+              <input type="checkbox" id="toggleTcpPing" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Smart MTR (фильтр ложных потерь)</span>
+              <input type="checkbox" id="toggleSmartMtr" checked>
+            </label>
+            <label class="toggle-row">
+              <span>GeoIP флаги стран и города</span>
+              <input type="checkbox" id="toggleGeoIp" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Автодетектор мульти-окон pem.exe</span>
+              <input type="checkbox" id="toggleMultiClient" checked>
+            </label>
+          </div>
+        </div>
+
+        <!-- Section 2: Windows TCP Tweaker -->
+        <div class="settings-box">
+          <h4>🚀 1-Click Оптимизация сети Windows</h4>
+          <p class="desc-text">Отключает алгоритм Нагла (TCP_NODELAY) и таймер Delayed ACK в реестре Windows. Снижает задержку отклика скиллов на 15–25 мс.</p>
+          <div class="tweak-status-card" id="tweakStatusCard">
+            <div class="status-indicator-box">
+              <span class="dot" id="tweakDot"></span>
+              <span id="tweakStatusText">Проверка статуса реестра...</span>
+            </div>
+            <div class="tweak-actions">
+              <button class="btn-primary" id="btnApplyTweaks">⚡ Применить оптимизацию</button>
+              <button class="btn-secondary" id="btnRevertTweaks">Восстановить стандарт</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top: 20px;">
+        <button class="btn-action" id="btnSaveSettingsClose">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TARGET IP CHANGE MODAL -->
+  <div class="modal-overlay" id="targetModal">
+    <div class="modal-card">
+      <h3>Сменить целевой сервер / IP</h3>
+      <p>Введите новый IP-адрес для мониторинга и MTR-трассировки:</p>
+      <input type="text" id="modalIpInput" class="modal-input" placeholder="51.77.68.91" value="51.77.68.91">
+      <div class="modal-actions">
+        <button class="btn-action" id="btnCancelModal">Отмена</button>
+        <button class="btn-primary" id="btnSaveTarget">Применить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

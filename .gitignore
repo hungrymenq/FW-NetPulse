@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Сборка и выпускные файлы
+build/
+release/
+*.spec
+*.exe
+*.dll
+*.sys
+*.zip
+
+# Локальные данные пользователя
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+config.local.json
+.env
+.env.*
+
+# Локальные файлы инструментов
+.gstack/
+.codex/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

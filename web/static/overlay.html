@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FW-NetPulse | In-Game Floating HUD</title>
+  <link rel="stylesheet" href="/overlay.css">
+</head>
+<body class="overlay-body">
+  <div class="hud-widget" id="hudWidget">
+    <!-- DRAGGABLE HEADER BAR -->
+    <div class="hud-header" id="hudHeader">
+      <div class="hud-brand">
+        <div class="hud-pulse" id="hudPulse"></div>
+        <span class="hud-title">FW-NetPulse HUD</span>
+      </div>
+      <div class="hud-controls">
+        <button class="hud-btn" id="btnHudSettings" title="Настройки виджета">⚙️</button>
+        <button class="hud-btn" id="btnHudMini" title="Компактный режим">🗕</button>
+      </div>
+    </div>
+
+    <!-- MAIN METRICS BODY -->
+    <div class="hud-content" id="hudContent">
+      <div class="hud-metric-row">
+        <!-- PING -->
+        <div class="hud-metric" id="hudPingBox">
+          <div class="hud-val" id="hudPing">--</div>
+          <div class="hud-label">ICMP ms</div>
+        </div>
+
+        <!-- TCP GAME PING -->
+        <div class="hud-metric" id="hudTcpBox">
+          <div class="hud-val" id="hudTcpPing">--</div>
+          <div class="hud-label">TCP :29000</div>
+        </div>
+
+        <!-- LOSS -->
+        <div class="hud-metric" id="hudLossBox">
+          <div class="hud-val" id="hudLoss">0.0%</div>
+          <div class="hud-label">LOSS</div>
+        </div>
+
+        <!-- JITTER -->
+        <div class="hud-metric" id="hudJitterBox">
+          <div class="hud-val" id="hudJitter">--</div>
+          <div class="hud-label">JITTER</div>
+        </div>
+      </div>
+
+      <!-- MULTI-CLIENT STATUS BAR -->
+      <div class="hud-client-bar" id="hudClientBar">
+        <span class="client-badge" id="hudClientCount">Окон: 0</span>
+        <select class="hud-select" id="hudClientSelect">
+          <option value="all">Все окна (Сводка)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- SETTINGS PANEL (EXPANDABLE) -->
+    <div class="hud-settings-panel" id="hudSettingsPanel">
+      <div class="setting-item">
+        <label>Прозрачность: <span id="valOpacity">85%</span></label>
+        <input type="range" id="sliderOpacity" min="30" max="100" value="85">
+      </div>
+      <div class="setting-item">
+        <label>Размер: <span id="valScale">100%</span></label>
+        <input type="range" id="sliderScale" min="75" max="140" value="100">
+      </div>
+      <div class="setting-toggles">
+        <label><input type="checkbox" id="chkShowTcp" checked> TCP порт</label>
+        <label><input type="checkbox" id="chkShowJitter" checked> Джиттер</label>
+        <label><input type="checkbox" id="chkShowClients" checked> Список окон</label>
+      </div>
+      <div class="setting-actions">
+        <button class="btn-sm" id="btnResetPos">Сбросить позицию</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/overlay.js"></script>
+</body>
+</html>

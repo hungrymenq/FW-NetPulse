@@ -1,10 +1,12 @@
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from unittest.mock import Mock
 
 
@@ -13,15 +15,17 @@ if app_dir not in sys.path:
     sys.path.insert(0, app_dir)
 
 from core.pinger import Win32Pinger
+from core.lag_logger import LagHistoryLogger
 from core.process_tracker import GameProcessTracker
 from core.tcp_pinger import TCPGamePinger
+from core.tracer import VisualMTREngine
 from core.route_optimizer import (
     CalibrationStore,
     DpiBypassManager,
     RouteAnalysisEngine,
     WireGuardRelayManager,
 )
-from run_monitor import NetPulseApp
+from run_monitor import GameEndpointMonitor, NetPulseApp
 from web.server import NetPulseHTTPRequestHandler
 
 
@@ -153,9 +157,368 @@ class NetPulseTests(unittest.TestCase):
         self.assertEqual([item["ping_type"] for item in result["instances"]], ["TCP", "TCP"])
         self.assertEqual(result["ping_ms"], 42.5)
 
+    def test_multi_client_payload_reuses_same_endpoint_measurements(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.endpoint_monitors_lock = threading.RLock()
+        app.max_endpoint_monitors = 8
+        first_monitor = object()
+        second_monitor = object()
+        app.endpoint_monitors = {
+            "51.77.68.91:29001": first_monitor,
+            "51.77.68.92:29002": second_monitor,
+        }
+
+        def endpoint_payload(monitor, timeframe):
+            ping = 41.0 if monitor is first_monitor else 58.0
+            return {
+                "ping": {"last_rtt": ping - 8, "avg_rtt": ping - 7},
+                "tcp_ping": {"last_rtt": ping, "avg_rtt": ping + 1},
+                "chart": {"labels": [], "icmp": [], "tcp": []},
+                "route": [],
+                "recent_freezes": [],
+            }
+
+        app._get_endpoint_payload = Mock(side_effect=endpoint_payload)
+        process_info = {
+            "pid": 100,
+            "instances": [
+                {"index": 1, "pid": 100, "remote_ip": "51.77.68.91", "remote_port": 29001, "has_connection": True},
+                {"index": 2, "pid": 200, "remote_ip": "51.77.68.91", "remote_port": 29001, "has_connection": True},
+                {"index": 3, "pid": 300, "remote_ip": "51.77.68.92", "remote_port": 29002, "has_connection": True},
+            ],
+        }
+
+        multi_client, enriched = app._build_multi_client_payload(process_info, 60)
+
+        self.assertEqual(app._get_endpoint_payload.call_count, 2)
+        self.assertEqual(len(multi_client["windows"]), 3)
+        self.assertEqual(len(multi_client["endpoints"]), 2)
+        self.assertEqual([item["ping_ms"] for item in enriched["instances"]], [41.0, 41.0, 58.0])
+        self.assertEqual(multi_client["active_window_id"], "pid-100")
+
+    def test_lag_history_can_be_filtered_by_game_endpoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger = LagHistoryLogger(os.path.join(temp_dir, "history.db"))
+            logger.log_freeze_event({
+                "target": "51.77.68.91",
+                "target_port": 29001,
+                "window_pid": 100,
+                "window_title": "Окно #1",
+                "reason": "Потеря пакета",
+            })
+            logger.log_freeze_event({
+                "target": "51.77.68.92",
+                "target_port": 29002,
+                "window_pid": 200,
+                "window_title": "Окно #2",
+                "reason": "Скачок задержки",
+            })
+
+            first_endpoint = logger.get_recent_events(
+                target_ip="51.77.68.91",
+                target_port=29001,
+            )
+
+        self.assertEqual(len(first_endpoint), 1)
+        self.assertEqual(first_endpoint[0]["target_port"], 29001)
+        self.assertEqual(first_endpoint[0]["window_pid"], 100)
+
+    def test_old_lag_database_is_migrated_without_losing_events(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "old-history.db")
+            with closing(sqlite3.connect(db_path)) as connection:
+                connection.execute("""
+                    CREATE TABLE freeze_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL NOT NULL,
+                        datetime_str TEXT NOT NULL,
+                        target_ip TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        peak_rtt REAL,
+                        root_cause TEXT,
+                        suspect_hop INTEGER,
+                        suspect_ip TEXT
+                    )
+                """)
+                connection.execute("""
+                    INSERT INTO freeze_events (
+                        timestamp, datetime_str, target_ip, reason, peak_rtt,
+                        root_cause, suspect_hop, suspect_ip
+                    ) VALUES (1, '2026-08-25 00:00:01', '51.77.68.91', 'Старое событие', 150, 'Анализ', 3, '192.0.2.1')
+                """)
+                connection.commit()
+
+            logger = LagHistoryLogger(db_path)
+            events = logger.get_recent_events(target_ip="51.77.68.91", target_port=29000)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["reason"], "Старое событие")
+        self.assertIsNone(events[0]["target_port"])
+
+    def test_stale_unselected_endpoint_monitor_is_stopped(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.endpoint_monitors_lock = threading.RLock()
+        app.active_endpoint_id = "51.77.68.91:29000"
+        app.default_endpoint_id = "51.77.68.91:29000"
+        primary = Mock()
+        stale = Mock()
+        app.endpoint_monitors = {
+            "51.77.68.91:29000": primary,
+            "51.77.68.92:29001": stale,
+        }
+        app.endpoint_last_seen = {
+            "51.77.68.91:29000": time.time(),
+            "51.77.68.92:29001": time.time() - 61,
+        }
+
+        app._sync_endpoint_monitors({"instances": []})
+
+        self.assertNotIn("51.77.68.92:29001", app.endpoint_monitors)
+        stale.stop.assert_called_once()
+        primary.stop.assert_not_called()
+
+    def test_unlisted_game_port_gets_its_own_monitor(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.endpoint_monitors_lock = threading.RLock()
+        app.active_endpoint_id = "51.77.68.91:29000"
+        app.default_endpoint_id = app.active_endpoint_id
+        app.endpoint_monitors = {}
+        app.endpoint_last_seen = {}
+        monitor = Mock(endpoint_id="89.111.154.169:29003")
+        app._ensure_endpoint_monitor = Mock(return_value=monitor)
+
+        app._sync_endpoint_monitors({
+            "instances": [{
+                "pid": 16740,
+                "remote_ip": "89.111.154.169",
+                "remote_port": 29003,
+                "has_connection": True,
+                "is_game_endpoint": False,
+            }]
+        })
+
+        app._ensure_endpoint_monitor.assert_called_once_with("89.111.154.169", 29003)
+        self.assertIn("89.111.154.169:29003", app.endpoint_last_seen)
+
+    def test_endpoint_monitor_start_and_stop_are_idempotent(self):
+        monitor = GameEndpointMonitor.__new__(GameEndpointMonitor)
+        monitor.lock = threading.Lock()
+        monitor.started = False
+        monitor.pinger = Mock()
+        monitor.tcp_pinger = Mock()
+        monitor.mtr_engine = Mock()
+
+        monitor.start()
+        monitor.start()
+        monitor.stop()
+        monitor.stop()
+
+        for service in (monitor.pinger, monitor.tcp_pinger, monitor.mtr_engine):
+            service.start.assert_called_once()
+            service.stop.assert_called_once()
+        self.assertFalse(monitor.started)
+
+    def test_endpoint_monitor_serializes_concurrent_start_and_stop(self):
+        monitor = GameEndpointMonitor.__new__(GameEndpointMonitor)
+        monitor.lock = threading.Lock()
+        monitor.started = False
+        monitor.pinger = Mock()
+        monitor.tcp_pinger = Mock()
+        monitor.mtr_engine = Mock()
+        start_entered = threading.Event()
+        continue_start = threading.Event()
+
+        def blocked_start():
+            start_entered.set()
+            self.assertTrue(continue_start.wait(timeout=1.0))
+
+        monitor.pinger.start.side_effect = blocked_start
+        start_thread = threading.Thread(target=monitor.start)
+        stop_thread = threading.Thread(target=monitor.stop)
+        start_thread.start()
+        self.assertTrue(start_entered.wait(timeout=1.0))
+        stop_thread.start()
+        self.assertTrue(stop_thread.is_alive(), "stop() должен дождаться завершения start()")
+        continue_start.set()
+        start_thread.join(timeout=1.0)
+        stop_thread.join(timeout=1.0)
+
+        self.assertFalse(start_thread.is_alive())
+        self.assertFalse(stop_thread.is_alive())
+        self.assertFalse(monitor.started)
+        for service in (monitor.pinger, monitor.tcp_pinger, monitor.mtr_engine):
+            service.stop.assert_called_once()
+
+    def test_endpoint_monitor_rolls_back_partial_start(self):
+        monitor = GameEndpointMonitor.__new__(GameEndpointMonitor)
+        monitor.lock = threading.Lock()
+        monitor.started = False
+        monitor.pinger = Mock()
+        monitor.tcp_pinger = Mock()
+        monitor.tcp_pinger.start.side_effect = RuntimeError("тестовый сбой")
+        monitor.mtr_engine = Mock()
+
+        with self.assertRaises(RuntimeError):
+            monitor.start()
+
+        self.assertFalse(monitor.started)
+        monitor.pinger.stop.assert_called_once()
+        monitor.tcp_pinger.stop.assert_not_called()
+        monitor.mtr_engine.start.assert_not_called()
+
+    def test_failed_endpoint_monitor_is_removed_for_retry(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.endpoint_monitors_lock = threading.RLock()
+        app.endpoint_monitors = {}
+        app.endpoint_last_seen = {}
+        app.max_endpoint_monitors = 8
+        app.running = True
+        broken_monitor = Mock(endpoint_id="51.77.68.92:29002")
+        broken_monitor.start.side_effect = RuntimeError("тестовый сбой")
+        app._create_endpoint_monitor = Mock(return_value=broken_monitor)
+
+        result = app._ensure_endpoint_monitor("51.77.68.92", 29002)
+
+        self.assertIsNone(result)
+        self.assertNotIn("51.77.68.92:29002", app.endpoint_monitors)
+        self.assertNotIn("51.77.68.92:29002", app.endpoint_last_seen)
+
+    def test_endpoint_monitor_limit_rejects_new_target(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.endpoint_monitors_lock = threading.RLock()
+        app.endpoint_monitors = {"51.77.68.91:29000": Mock()}
+        app.endpoint_last_seen = {"51.77.68.91:29000": time.time()}
+        app.max_endpoint_monitors = 1
+        app.running = False
+        app._create_endpoint_monitor = Mock()
+
+        result = app._ensure_endpoint_monitor("51.77.68.92", 29002)
+
+        self.assertIsNone(result)
+        app._create_endpoint_monitor.assert_not_called()
+
+    def test_select_process_switches_primary_endpoint_immediately(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.process_info_lock = threading.Lock()
+        app.process_selection_lock = threading.RLock()
+        app.process_tracker = Mock(selected_pid=None)
+        app.change_target = Mock()
+        app.active_game_info = {
+            "instances": [
+                {"pid": 200, "remote_ip": "51.77.68.92", "remote_port": 29002, "has_connection": True},
+            ]
+        }
+
+        selected = app.select_process(200)
+
+        self.assertTrue(selected)
+        self.assertEqual(app.process_tracker.selected_pid, 200)
+        app.change_target.assert_called_once_with("51.77.68.92", 29002)
+
+    def test_select_process_rejects_unknown_pid(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.process_info_lock = threading.Lock()
+        app.process_selection_lock = threading.RLock()
+        app.process_tracker = Mock(selected_pid=None)
+        app.change_target = Mock()
+        app.active_game_info = {"instances": []}
+
+        selected = app.select_process(999)
+
+        self.assertFalse(selected)
+        self.assertIsNone(app.process_tracker.selected_pid)
+        app.change_target.assert_not_called()
+
+    def test_select_process_without_connection_keeps_current_target(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.process_info_lock = threading.Lock()
+        app.process_selection_lock = threading.RLock()
+        app.process_tracker = Mock(selected_pid=None)
+        app.change_target = Mock()
+        app.active_game_info = {
+            "instances": [
+                {"pid": 200, "remote_ip": "51.77.68.92", "remote_port": 29002, "has_connection": False},
+            ]
+        }
+
+        selected = app.select_process(200)
+
+        self.assertTrue(selected)
+        self.assertEqual(app.process_tracker.selected_pid, 200)
+        app.change_target.assert_not_called()
+
+    def test_select_process_keeps_previous_pid_when_target_change_fails(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.process_info_lock = threading.Lock()
+        app.process_selection_lock = threading.RLock()
+        app.process_tracker = Mock(selected_pid=100)
+        app.change_target = Mock(side_effect=RuntimeError("тестовый сбой"))
+        app.active_game_info = {
+            "instances": [
+                {"pid": 200, "remote_ip": "51.77.68.92", "remote_port": 29002, "has_connection": True},
+            ]
+        }
+
+        with self.assertRaises(RuntimeError):
+            app.select_process(200)
+
+        self.assertEqual(app.process_tracker.selected_pid, 100)
+
+    def test_focus_process_validates_window_before_native_switch(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.select_process = Mock(return_value=True)
+        app.process_tracker = Mock()
+        app.process_tracker.focus_window.return_value = {
+            "success": True,
+            "pid": 200,
+            "title": "Forsaken World",
+        }
+
+        result = app.focus_process_window(200)
+
+        self.assertTrue(result["success"])
+        app.select_process.assert_called_once_with(200)
+        app.process_tracker.focus_window.assert_called_once_with(200)
+
+    def test_focus_process_rejects_closed_window(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.select_process = Mock(return_value=False)
+        app.process_tracker = Mock()
+
+        result = app.focus_process_window(200)
+
+        self.assertFalse(result["success"])
+        self.assertIn("не найдено", result["error"])
+        app.process_tracker.focus_window.assert_not_called()
+
+    def test_interface_contains_per_window_graphs_and_tabs(self):
+        index_path = os.path.join(app_dir, "web", "static", "index.html")
+        script_path = os.path.join(app_dir, "web", "static", "app.js")
+        with open(index_path, "r", encoding="utf-8") as file:
+            index_html = file.read()
+        with open(script_path, "r", encoding="utf-8") as file:
+            script = file.read()
+
+        self.assertIn('id="windowChartsGrid"', index_html)
+        self.assertIn('id="mtrWindowTabs"', index_html)
+        self.assertIn('id="historyWindowTabs"', index_html)
+        self.assertIn("renderWindowCharts", script)
+        self.assertIn("updateMultiClientPanels", script)
+        self.assertIn('id="toggleMainChartVisibility"', index_html)
+        self.assertIn('id="toggleWindowChartsVisibility"', index_html)
+        self.assertIn("shouldPauseUiRefresh", script)
+        self.assertIn('/api/focus_process', script)
+        self.assertIn("const clientCards = new Map()", script)
+        self.assertIn("requestedSelectedPid", script)
+        self.assertIn('card.addEventListener("click"', script)
+        self.assertNotIn('onclick="selectProcessPid', script)
+        self.assertNotIn('onclick="event.stopPropagation(); focusProcessWindow', script)
+
     def test_auto_detection_switches_when_only_port_changed(self):
         app = NetPulseApp.__new__(NetPulseApp)
         app.auto_detect = True
+        app.process_selection_lock = threading.RLock()
+        app.process_tracker = Mock(selected_pid=None)
         app.target_ip = "51.77.68.91"
         app.target_port = 29000
         app.change_target = Mock()
@@ -174,6 +537,51 @@ class NetPulseTests(unittest.TestCase):
 
         self.assertTrue(changed)
         app.change_target.assert_called_once_with("51.77.68.91", 29001)
+
+    def test_auto_detection_respects_pid_selected_after_stale_scan(self):
+        app = NetPulseApp.__new__(NetPulseApp)
+        app.auto_detect = True
+        app.process_selection_lock = threading.RLock()
+        app.process_tracker = Mock(selected_pid=200)
+        app.target_ip = "51.77.68.91"
+        app.target_port = 29000
+        app.change_target = Mock()
+        process_info = {
+            "detected": True,
+            "instances_count": 2,
+            "primary_instance": {
+                "pid": 100,
+                "remote_ip": "51.77.68.91",
+                "remote_port": 29000,
+                "has_connection": True,
+            },
+            "instances": [
+                {"pid": 100, "remote_ip": "51.77.68.91", "remote_port": 29000, "has_connection": True},
+                {"pid": 200, "remote_ip": "51.77.68.92", "remote_port": 29002, "has_connection": True},
+            ],
+        }
+
+        changed = app._select_process_target(process_info)
+
+        self.assertTrue(changed)
+        app.change_target.assert_called_once_with("51.77.68.92", 29002)
+
+    def test_mtr_does_not_close_icmp_handle_while_thread_is_alive(self):
+        engine = VisualMTREngine.__new__(VisualMTREngine)
+        engine.running = True
+        engine.lifecycle_lock = threading.Lock()
+        engine.handle_lock = threading.Lock()
+        engine.stop_event = threading.Event()
+        engine.thread = Mock()
+        engine.thread.is_alive.return_value = True
+        engine.h_icmp = 123
+        engine.iphlpapi = Mock()
+
+        engine.stop()
+
+        engine.thread.join.assert_called_once_with(timeout=1.5)
+        engine.iphlpapi.IcmpCloseHandle.assert_not_called()
+        self.assertEqual(engine.h_icmp, 123)
 
     def test_chart_series_aligns_tcp_by_timestamp_and_marks_spike(self):
         ping_history = [

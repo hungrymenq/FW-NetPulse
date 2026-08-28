@@ -101,6 +101,128 @@ class GameProcessTracker:
             return os.path.basename(buf.value).lower()
         return ""
 
+    def focus_window(self, pid: int) -> Dict[str, Any]:
+        """Восстанавливает и выводит на передний план главное окно процесса."""
+        try:
+            target_pid = int(pid)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "Некорректный PID игрового окна"}
+
+        user32 = ctypes.windll.user32
+        candidates = []
+        enum_callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = [enum_callback_type, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetWindow.restype = wintypes.HWND
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.ShowWindow.restype = wintypes.BOOL
+        user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+        user32.AttachThreadInput.restype = wintypes.BOOL
+        user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        user32.BringWindowToTop.restype = wintypes.BOOL
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.SetActiveWindow.argtypes = [wintypes.HWND]
+        user32.SetActiveWindow.restype = wintypes.HWND
+        user32.SetFocus.argtypes = [wintypes.HWND]
+        user32.SetFocus.restype = wintypes.HWND
+        user32.FlashWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+        user32.FlashWindow.restype = wintypes.BOOL
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        self.kernel32.GetCurrentThreadId.argtypes = []
+        self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+        @enum_callback_type
+        def collect_window(hwnd, _):
+            owner_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+            if owner_pid.value != target_pid or not user32.IsWindowVisible(hwnd):
+                return True
+
+            title_length = user32.GetWindowTextLengthW(hwnd)
+            if title_length <= 0:
+                return True
+            title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+            user32.GetWindowTextW(hwnd, title_buffer, title_length + 1)
+            if title_buffer.value.strip():
+                # Сначала предпочитаем самостоятельное не свёрнутое окно.
+                score = (
+                    0 if not user32.GetWindow(hwnd, 4) else 1,  # GW_OWNER
+                    0 if not user32.IsIconic(hwnd) else 1,
+                    -title_length,
+                )
+                candidates.append((score, hwnd, title_buffer.value.strip()))
+            return True
+
+        user32.EnumWindows(collect_window, 0)
+        if not candidates:
+            return {
+                "success": False,
+                "error": "Окно процесса найдено, но его игровое окно ещё не создано",
+            }
+
+        _, hwnd, title = min(candidates, key=lambda item: item[0])
+        SW_RESTORE = 9
+        SW_SHOW = 5
+        HWND_TOP = 0
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_SHOWWINDOW = 0x0040
+
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        else:
+            user32.ShowWindow(hwnd, SW_SHOW)
+
+        current_thread = self.kernel32.GetCurrentThreadId()
+        foreground_hwnd = user32.GetForegroundWindow()
+        foreground_thread = user32.GetWindowThreadProcessId(foreground_hwnd, None) if foreground_hwnd else 0
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+        attached_threads = []
+        activated = False
+
+        try:
+            for thread_id in (foreground_thread, target_thread):
+                if thread_id and thread_id != current_thread and thread_id not in attached_threads:
+                    if user32.AttachThreadInput(current_thread, thread_id, True):
+                        attached_threads.append(thread_id)
+            user32.SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+            user32.BringWindowToTop(hwnd)
+            activated = bool(user32.SetForegroundWindow(hwnd))
+            user32.SetActiveWindow(hwnd)
+            user32.SetFocus(hwnd)
+        finally:
+            for thread_id in reversed(attached_threads):
+                user32.AttachThreadInput(current_thread, thread_id, False)
+
+        is_foreground = user32.GetForegroundWindow() == hwnd
+        if not activated and not is_foreground:
+            user32.FlashWindow(hwnd, True)
+            return {
+                "success": False,
+                "error": "Windows запретила переключение. Игровое окно подсвечено на панели задач.",
+                "pid": target_pid,
+                "title": title,
+            }
+        return {"success": True, "pid": target_pid, "title": title}
+
     def scan_all_instances(self) -> Dict[str, Any]:
         found_procs: Dict[int, str] = {}
 

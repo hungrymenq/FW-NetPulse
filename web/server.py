@@ -155,8 +155,36 @@ class NetPulseHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             except (TypeError, ValueError):
                 self.send_json_response({"success": False, "error": "Некорректный PID процесса"}, status=400)
                 return
-            self.monitor_app.process_tracker.selected_pid = pid
+            try:
+                if hasattr(self.monitor_app, "select_process"):
+                    if not self.monitor_app.select_process(pid):
+                        self.send_json_response({"success": False, "error": "Игровое окно с таким PID не найдено"}, status=404)
+                        return
+                else:
+                    self.monitor_app.process_tracker.selected_pid = pid
+            except Exception as error:
+                self.send_json_response({"success": False, "error": f"Не удалось выбрать игровое окно: {error}"}, status=409)
+                return
             self.send_json_response({"success": True, "selected_pid": pid})
+            return
+
+        elif path == "/api/focus_process":
+            try:
+                pid = int(data.get("pid"))
+                if pid <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                self.send_json_response({"success": False, "error": "Некорректный PID процесса"}, status=400)
+                return
+            if not hasattr(self.monitor_app, "focus_process_window"):
+                self.send_json_response({"success": False, "error": "Переключение окон недоступно"}, status=501)
+                return
+            try:
+                result = self.monitor_app.focus_process_window(pid)
+            except Exception as error:
+                self.send_json_response({"success": False, "error": f"Не удалось показать игровое окно: {error}"}, status=409)
+                return
+            self.send_json_response(result, status=200 if result.get("success") else 400)
             return
 
         elif path == "/api/tweaks/apply":

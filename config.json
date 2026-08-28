@@ -10,6 +10,7 @@
     "max_hops": 20,
     "freeze_threshold_ms": 120,
     "packet_loss_window_seconds": 60,
+    "multi_client_max_endpoints": 8,
     "auto_detect_game_process": true,
     "game_process_names": [
       "pem.exe",
@@ -40,7 +41,8 @@
     "game_ports": [
       29000,
       29001,
-      29002
+      29002,
+      29003
     ],
     "relays": []
   }

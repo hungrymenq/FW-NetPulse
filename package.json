@@ -1,0 +1,12 @@
+{
+  "name": "fw-netpulse-ui-tests",
+  "version": "1.1.2.0",
+  "private": true,
+  "description": "Браузерные тесты локальной панели FW-NetPulse",
+  "scripts": {
+    "test:multi-client": "powershell -ExecutionPolicy Bypass -File ./test_multi_client_ui.ps1"
+  },
+  "devDependencies": {
+    "playwright-core": "1.62.1"
+  }
+}

@@ -5,7 +5,8 @@ import json
 import csv
 import io
 import threading
-from typing import List, Dict, Any, Optional
+from contextlib import contextmanager
+from typing import List, Dict, Any, Optional, Iterator
 
 class LagHistoryLogger:
     """
@@ -17,10 +18,14 @@ class LagHistoryLogger:
         self.lock = threading.Lock()
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self.lock:
@@ -32,6 +37,9 @@ class LagHistoryLogger:
                     timestamp REAL NOT NULL,
                     datetime_str TEXT NOT NULL,
                     target_ip TEXT NOT NULL,
+                    target_port INTEGER,
+                    window_pid INTEGER,
+                    window_title TEXT,
                     reason TEXT NOT NULL,
                     peak_rtt REAL,
                     root_cause TEXT,
@@ -39,6 +47,21 @@ class LagHistoryLogger:
                     suspect_ip TEXT
                 )
                 """)
+
+                # Обновляем старую базу на месте, не удаляя историю пользователя.
+                existing_columns = {
+                    row[1]
+                    for row in cursor.execute("PRAGMA table_info(freeze_events)").fetchall()
+                }
+                for column_name, column_type in (
+                    ("target_port", "INTEGER"),
+                    ("window_pid", "INTEGER"),
+                    ("window_title", "TEXT"),
+                ):
+                    if column_name not in existing_columns:
+                        cursor.execute(
+                            f"ALTER TABLE freeze_events ADD COLUMN {column_name} {column_type}"
+                        )
 
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS hourly_aggregates (
@@ -59,6 +82,9 @@ class LagHistoryLogger:
         ts = event.get("timestamp", time.time())
         dt_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
         target_ip = event.get("target", "51.77.68.91")
+        target_port = event.get("target_port")
+        window_pid = event.get("window_pid")
+        window_title = event.get("window_title")
         reason = event.get("reason", "Unknown spike")
         peak_rtt = event.get("rtt")
         root_cause = event.get("root_cause", "Анализ маршрута...")
@@ -70,24 +96,49 @@ class LagHistoryLogger:
                 with self._get_conn() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                    INSERT INTO freeze_events (timestamp, datetime_str, target_ip, reason, peak_rtt, root_cause, suspect_hop, suspect_ip)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (ts, dt_str, target_ip, reason, peak_rtt, root_cause, suspect_hop, suspect_ip))
+                    INSERT INTO freeze_events (
+                        timestamp, datetime_str, target_ip, target_port, window_pid,
+                        window_title, reason, peak_rtt, root_cause, suspect_hop, suspect_ip
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        ts, dt_str, target_ip, target_port, window_pid, window_title,
+                        reason, peak_rtt, root_cause, suspect_hop, suspect_ip,
+                    ))
                     conn.commit()
             except Exception as e:
                 print(f"[LagLogger Error]: {e}")
 
-    def get_recent_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_recent_events(
+        self,
+        limit: int = 50,
+        target_ip: Optional[str] = None,
+        target_port: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         with self.lock:
             try:
                 with self._get_conn() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
-                    SELECT id, timestamp, datetime_str, target_ip, reason, peak_rtt, root_cause, suspect_hop, suspect_ip
+                    conditions = []
+                    parameters = []
+                    if target_ip:
+                        conditions.append("target_ip = ?")
+                        parameters.append(str(target_ip))
+                    if target_port is not None:
+                        # События старых версий без порта остаются видимыми по IP.
+                        conditions.append("(target_port = ? OR target_port IS NULL)")
+                        parameters.append(int(target_port))
+                    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+                    parameters.append(max(1, int(limit)))
+                    cursor.execute(f"""
+                    SELECT id, timestamp, datetime_str, target_ip, target_port,
+                           window_pid, window_title, reason, peak_rtt, root_cause,
+                           suspect_hop, suspect_ip
                     FROM freeze_events
+                    {where_clause}
                     ORDER BY id DESC
                     LIMIT ?
-                    """, (limit,))
+                    """, parameters)
                     rows = cursor.fetchall()
                     return [dict(r) for r in rows]
             except Exception as e:
@@ -119,7 +170,11 @@ class LagHistoryLogger:
     def export_csv(self) -> str:
         events = self.get_recent_events(limit=500)
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=["id", "datetime_str", "target_ip", "reason", "peak_rtt", "root_cause", "suspect_hop", "suspect_ip", "timestamp"])
+        writer = csv.DictWriter(output, fieldnames=[
+            "id", "datetime_str", "target_ip", "target_port", "window_pid",
+            "window_title", "reason", "peak_rtt", "root_cause", "suspect_hop",
+            "suspect_ip", "timestamp",
+        ])
         writer.writeheader()
         for ev in events:
             writer.writerow(ev)

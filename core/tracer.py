@@ -106,6 +106,9 @@ class VisualMTREngine:
         self.smart_filter_enabled = True
         self.thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
+        self.lifecycle_lock = threading.Lock()
+        self.handle_lock = threading.Lock()
+        self.stop_event = threading.Event()
 
         self.hops: Dict[int, HopStats] = {i: HopStats(i) for i in range(1, max_hops + 1)}
         self.last_update_time: float = 0
@@ -147,8 +150,10 @@ class VisualMTREngine:
         threading.Thread(target=worker, daemon=True).start()
 
     def _probe_single_ttl(self, ttl: int, timeout_ms: int = 1000) -> tuple:
-        if not self.h_icmp:
-            self.h_icmp = self.iphlpapi.IcmpCreateFile()
+        with self.handle_lock:
+            if not self.h_icmp:
+                self.h_icmp = self.iphlpapi.IcmpCreateFile()
+            icmp_handle = self.h_icmp
 
         try:
             target_ip_little = struct.unpack('<I', socket.inet_aton(self.target_ip))[0]
@@ -162,7 +167,7 @@ class VisualMTREngine:
 
         start_t = time.perf_counter()
         ret = self.iphlpapi.IcmpSendEcho(
-            self.h_icmp,
+            icmp_handle,
             target_ip_little,
             send_data,
             len(send_data),
@@ -185,65 +190,89 @@ class VisualMTREngine:
         return None, None
 
     def _mtr_loop(self):
-        while self.running:
-            dest_reached = False
-            for ttl in range(1, self.max_hops + 1):
-                if not self.running:
-                    break
-
-                resp_ip, rtt = self._probe_single_ttl(ttl, timeout_ms=800)
-
-                with self.lock:
-                    hop = self.hops[ttl]
-                    hop.update(resp_ip, rtt)
-
-                    if resp_ip and not hop.hostname and not hop.resolving_hostname:
-                        hop.resolving_hostname = True
-                        self._resolve_dns_async(resp_ip, hop)
-
-                if resp_ip == self.target_ip:
-                    dest_reached = True
-                    break
-
-            # Smart MTR Rate-Limit check: If destination has 0% loss, intermediate loss is rate-limiting
-            with self.lock:
-                dest_hop = None
-                for i in range(self.max_hops, 0, -1):
-                    if self.hops[i].ip == self.target_ip:
-                        dest_hop = self.hops[i]
+        try:
+            while self.running:
+                dest_reached = False
+                for ttl in range(1, self.max_hops + 1):
+                    if not self.running:
                         break
 
-                if dest_hop and dest_hop.sent >= 3 and (dest_hop.lost / dest_hop.sent) < 0.05:
-                    for i in range(1, dest_hop.hop_num):
-                        h = self.hops[i]
-                        if h.sent >= 3 and (h.lost / h.sent) > 0.15:
-                            h.is_rate_limited = True
-                        else:
-                            h.is_rate_limited = False
+                    resp_ip, rtt = self._probe_single_ttl(ttl, timeout_ms=800)
 
-                self.last_update_time = time.time()
+                    with self.lock:
+                        hop = self.hops[ttl]
+                        hop.update(resp_ip, rtt)
 
-            time.sleep(max(1.0, float(self.interval_s)))
+                        if resp_ip and not hop.hostname and not hop.resolving_hostname:
+                            hop.resolving_hostname = True
+                            self._resolve_dns_async(resp_ip, hop)
+
+                    if resp_ip == self.target_ip:
+                        dest_reached = True
+                        break
+
+                # Smart MTR Rate-Limit check: If destination has 0% loss, intermediate loss is rate-limiting
+                with self.lock:
+                    dest_hop = None
+                    for i in range(self.max_hops, 0, -1):
+                        if self.hops[i].ip == self.target_ip:
+                            dest_hop = self.hops[i]
+                            break
+
+                    if dest_hop and dest_hop.sent >= 3 and (dest_hop.lost / dest_hop.sent) < 0.05:
+                        for i in range(1, dest_hop.hop_num):
+                            h = self.hops[i]
+                            if h.sent >= 3 and (h.lost / h.sent) > 0.15:
+                                h.is_rate_limited = True
+                            else:
+                                h.is_rate_limited = False
+
+                    self.last_update_time = time.time()
+
+                if self.stop_event.wait(max(1.0, float(self.interval_s))):
+                    break
+        finally:
+            if self.stop_event.is_set():
+                self._close_icmp_handle()
+
+    def _close_icmp_handle(self):
+        with self.handle_lock:
+            handle = self.h_icmp
+            self.h_icmp = None
+        if handle:
+            try:
+                self.iphlpapi.IcmpCloseHandle(handle)
+            except Exception:
+                pass
 
     def start(self):
-        if not self.running:
+        with self.lifecycle_lock:
+            if self.running:
+                return
+            if self.thread and self.thread.is_alive():
+                raise RuntimeError("Поток Smart MTR ещё завершает предыдущую остановку")
+            self.stop_event.clear()
             self.running = True
             self.thread = threading.Thread(target=self._mtr_loop, daemon=True, name="VisualMTREngineThread")
             self.thread.start()
 
     def stop(self):
-        self.running = False
+        with self.lifecycle_lock:
+            self.running = False
+            self.stop_event.set()
+            worker = self.thread
+        thread_stopped = True
         try:
-            if self.thread and self.thread.is_alive():
-                self.thread.join(timeout=0.2)
+            if worker and worker.is_alive():
+                # Одна Win32 ICMP-проба ждёт не более 800 мс. Даём потоку
+                # закончить текущий вызов и только после этого закрываем handle.
+                worker.join(timeout=1.5)
+                thread_stopped = not worker.is_alive()
         except Exception:
-            pass
-        try:
-            if self.h_icmp:
-                self.iphlpapi.IcmpCloseHandle(self.h_icmp)
-                self.h_icmp = None
-        except Exception:
-            pass
+            thread_stopped = False
+        if not thread_stopped:
+            return
+        self._close_icmp_handle()
 
     def get_route_snapshot(self) -> List[Dict[str, Any]]:
         with self.lock:

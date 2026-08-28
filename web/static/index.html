@@ -15,7 +15,7 @@
       <div class="brand-section">
         <div class="pulse-indicator" id="globalStatusDot"></div>
         <div class="brand-title">
-          <h1>FW-NetPulse <span class="badge-version" id="appVersion">v1.0.0.0</span></h1>
+          <h1>FW-NetPulse <span class="badge-version" id="appVersion">v1.1.2.0</span></h1>
           <span class="brand-subtitle">Мониторинг задержек, TCP сокетов и диагностика лагов Forsaken World</span>
         </div>
       </div>
@@ -245,7 +245,7 @@
     </section>
 
     <!-- LIVE REAL-TIME GRAPH WITH TIMEFRAME SWITCHER -->
-    <section class="chart-section">
+    <section class="chart-section" id="mainChartSection">
       <div class="section-header">
         <div class="header-left">
           <h2>📊 График сетевой задержки</h2>
@@ -274,14 +274,29 @@
       </div>
     </section>
 
+    <!-- ОТДЕЛЬНЫЕ ГРАФИКИ ДЛЯ КАЖДОГО ИГРОВОГО ОКНА -->
+    <section class="window-charts-section" id="windowChartsSection" style="display: none;">
+      <div class="section-header">
+        <div class="header-left">
+          <h2>🪟 Графики игровых окон и зеркал</h2>
+          <span class="chart-sub">Каждое окно показывает данные своего IP и TCP-порта; одинаковые зеркала используют один набор проб</span>
+        </div>
+        <div class="header-right">
+          <span class="badge-count" id="windowChartsCount">Окон: 0</span>
+        </div>
+      </div>
+      <div class="window-charts-grid" id="windowChartsGrid"></div>
+    </section>
+
     <!-- VISUAL SMART MTR ROUTE TABLE WITH GEOIP & FLAGS -->
-    <section class="mtr-section">
+    <section class="mtr-section" id="mtrSection">
       <div class="section-header">
         <div class="header-left">
           <h2>🛣️ Визуальный Smart MTR-маршрут (с локацией и флагами)</h2>
-          <span class="chart-sub">Интеллектуальная фильтрация ICMP Rate-Limit и геолокация узлов</span>
+          <span class="chart-sub" id="mtrWindowContext">Интеллектуальная фильтрация ICMP Rate-Limit и геолокация узлов</span>
         </div>
         <div class="header-right">
+          <div class="window-tabs" id="mtrWindowTabs" aria-label="Выбор игрового окна для маршрута"></div>
           <span class="mtr-indicator" id="mtrPulse">● Smart MTR Активен</span>
         </div>
       </div>
@@ -312,13 +327,14 @@
     </section>
 
     <!-- FREEZE & INCIDENT HISTORY -->
-    <section class="history-section">
+    <section class="history-section" id="historySection">
       <div class="section-header">
         <div class="header-left">
           <h2>⚠️ Журнал микрофризов и сетевых аномалий</h2>
-          <span class="chart-sub">Автоматическая фиксация скачков пинга и потерь пакетов в SQLite</span>
+          <span class="chart-sub" id="historyWindowContext">Автоматическая фиксация скачков пинга и потерь пакетов в SQLite</span>
         </div>
         <div class="header-right">
+          <div class="window-tabs" id="historyWindowTabs" aria-label="Выбор игрового окна для журнала"></div>
           <span class="badge-count" id="freezeCountBadge">Всего событий: 0</span>
         </div>
       </div>
@@ -345,8 +361,8 @@
 
     <!-- FOOTER -->
     <footer class="app-footer">
-      <div>FW-NetPulse Ultimate Engine • Target: <span id="footerTarget">51.77.68.91</span></div>
-      <div>High-Precision Windows API • 0% CPU Overhead</div>
+      <div>FW-NetPulse • Цель: <span id="footerTarget">51.77.68.91</span></div>
+      <div>Высокоточные Windows API • Параллельный мониторинг зеркал</div>
     </footer>
   </div>
 
@@ -380,6 +396,38 @@
               <input type="checkbox" id="toggleMultiClient" checked>
             </label>
           </div>
+        </div>
+
+        <div class="settings-box">
+          <h4>👁️ Настройка интерфейса</h4>
+          <p class="desc-text">Выключенные блоки не занимают место. Выбор сохраняется после перезапуска программы.</p>
+          <div class="toggle-list">
+            <label class="toggle-row">
+              <span>Основной большой график</span>
+              <input type="checkbox" id="toggleMainChartVisibility" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Мини-графики игровых окон</span>
+              <input type="checkbox" id="toggleWindowChartsVisibility" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Карточки активных окон</span>
+              <input type="checkbox" id="toggleClientListVisibility" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Оптимизация маршрута и обход</span>
+              <input type="checkbox" id="toggleOptimizerVisibility" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Визуальный Smart MTR</span>
+              <input type="checkbox" id="toggleMtrVisibility" checked>
+            </label>
+            <label class="toggle-row">
+              <span>Журнал микрофризов</span>
+              <input type="checkbox" id="toggleHistoryVisibility" checked>
+            </label>
+          </div>
+          <button class="btn-secondary settings-reset-button" id="btnResetInterfaceSettings" type="button">Сбросить вид панели</button>
         </div>
 
         <!-- Section 2: Windows TCP Tweaker -->

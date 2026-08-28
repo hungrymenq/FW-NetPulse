@@ -71,6 +71,28 @@ try {
         $javaScript.Content -notmatch "updateOptimizer") {
         throw "Во встроенном интерфейсе EXE отсутствует управление оптимизатором"
     }
+    if ($null -eq $status.multi_client -or
+        $null -eq $status.multi_client.windows -or
+        $null -eq $status.multi_client.endpoints) {
+        throw "EXE не вернул многоклиентские данные по игровым окнам"
+    }
+    if ($page.Content -notmatch "windowChartsGrid" -or
+        $page.Content -notmatch "mtrWindowTabs" -or
+        $javaScript.Content -notmatch "updateMultiClientPanels") {
+        throw "Во встроенном интерфейсе EXE отсутствуют графики или вкладки игровых окон"
+    }
+    if ($page.Content -notmatch "toggleMainChartVisibility" -or
+        $page.Content -notmatch "toggleWindowChartsVisibility" -or
+        $javaScript.Content -notmatch "shouldPauseUiRefresh") {
+        throw "Во встроенном интерфейсе EXE отсутствуют настройки панели или безопасное копирование текста"
+    }
+    if ($javaScript.Content -notmatch "/api/focus_process") {
+        throw "Во встроенном интерфейсе EXE отсутствует переключение на игровое окно"
+    }
+    if ($javaScript.Content -match 'onclick="selectProcessPid' -or
+        $javaScript.Content -notmatch 'card\.addEventListener\("click"') {
+        throw "Во встроенном интерфейсе EXE используется ненадёжный обработчик выбора окна"
+    }
 
     try {
         Invoke-WebRequest `
@@ -115,6 +137,10 @@ try {
         "Локальный API защищён" = $true
         "Серии потерь встроены" = $true
         "Анализ маршрута встроен" = $true
+        "Многоклиентский режим встроен" = $true
+        "Настройка панели встроена" = $true
+        "Копирование текста защищено" = $true
+        "Переключение окон встроено" = $true
         "Точечный DPI-модуль найден" = [bool]$status.optimizer.dpi.available
         "HUD запущен из панели" = [bool]($hudResult.success -and $newHudProcesses.Count -gt 0)
     } | Format-List

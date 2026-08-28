@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 
+# Node.js нужен только для браузерных тестов панели
+node_modules/
+playwright-report/
+test-results/
+
 # Сборка и выпускные файлы
 build/
 release/
